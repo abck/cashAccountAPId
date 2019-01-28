@@ -26,8 +26,8 @@ var sqliteDB *sql.DB
 var regexRequest *regexp.Regexp
 
 func main() {
-	regexRequest = regexp.MustCompile(`^/CashAccount/(\d+)/([a-zA-Z0-9_]{1,99})/?$`)
-	http.HandleFunc("/CashAccount/", handler)
+	regexRequest = regexp.MustCompile(`^/lookup/(\d+)/([a-zA-Z0-9_]{1,99})/?$`)
+	http.HandleFunc("/lookup/", handler)
 
 	// create default config
 	cashaccHomeDir := bchutil.AppDataDir("cashAccount", false)
@@ -55,6 +55,7 @@ func main() {
 	}
 
 	// sqlite
+	log.Println("Opening database...")
 	cashaccDbFileName := filepath.Join(cashaccHomeDir, "db.sqlite")
 	sqliteDB, err = sql.Open("sqlite3", cashaccDbFileName)
 	if err != nil {
@@ -80,91 +81,106 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Println("Starting webserver...")
 	log.Fatal(http.ListenAndServe(cfg.Section("cashAccountAPId").Key("webserverbindaddr").String(), nil))
 }
 
-//
 func handler(w http.ResponseWriter, r *http.Request) {
 
-	w.Header().Add("Content-Type", "application/json")
-	re := response{}
+	re := responseLookup{}
 
+	// check if the URL is matching the format specified in regexRequest
 	m := regexRequest.FindStringSubmatch(r.URL.Path)
 	if len(m) == 0 {
-		re.Error = "Invalid request"
-		_, _ = fmt.Fprint(w, re.Format())
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte("Error 400"))
 		return
 	}
 
+	// parse data from the URL, parseInt can not fail, because the int was already verfied in the regex test above
 	re.Block, _ = strconv.ParseInt(m[1], 10, 64)
 	re.Block += 563620
 	re.Name = m[2]
 	re.Results = []txAndProofPair{}
 
+	// lookup if there is any entry in the database
 	rr, err := sqliteDB.Query(`SELECT txid FROM nameindex WHERE name like ? AND block == ?;`, re.Name, re.Block)
 	if err != nil {
-		re.Error = "Database error"
-		_, _ = fmt.Fprint(w, re.Format())
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte("Error 500"))
 		return
 	}
 
+	// for each row
 	for rr.Next() {
-		txidRaw := []byte("")
+		tapp := txAndProofPair{}
 
+		// get the txid (binary form)
+		txidRaw := []byte("")
 		err = rr.Scan(&txidRaw)
 		if err != nil {
-			re.Error = "Database error"
-			_, _ = fmt.Fprint(w, re.Format())
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("Error 500"))
 			return
 		}
 
+		// convert the binary form to hex-encoded string
 		txid := hex.EncodeToString(txidRaw)
 		var txidChainhash chainhash.Hash
 		_ = chainhash.Decode(&txidChainhash, txid)
 
+		// get the transaction (*bchutil.Tx)
 		tx, err := bchdClient.GetRawTransaction(&txidChainhash)
 		if err != nil {
-			re.Error = "Database error (at GetTransaction)" + " >" + err.Error()
-			_, _ = fmt.Fprint(w, re.Format())
+			fmt.Println("Database error (at GetTransaction)", err.Error())
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("Error 500"))
 			return
 		}
 
+		// get the blockhash (*chainhash.Hash)
 		blockHash, err := bchdClient.GetBlockHash(re.Block)
 		if err != nil {
-			re.Error = "Database error (at GetBlockHash)" + " >" + err.Error()
-			_, _ = fmt.Fprint(w, re.Format())
+			fmt.Println("Database error (at GetBlockHash)", err.Error())
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("Error 500"))
 			return
 		}
 
-		shit := blockHash.String()
-		txOutProof, err := bchdClient.GetTxOutProof([]string{txid}, &shit)
+		// convert blockhash into hex-encoded string
+		blockHashString := blockHash.String()
+
+		// get the txoutproof from bchd
+		txOutProof, err := bchdClient.GetTxOutProof([]string{txid}, &blockHashString)
 		if err != nil {
-			re.Error = "Database error (at GetTxOutProof)" + " >" + err.Error()
-			_, _ = fmt.Fprint(w, re.Format())
+			fmt.Println("Database error (at GetTxOutProof)", err.Error())
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("Error 500"))
 			return
 		}
+		// add to output
+		tapp.Proof = txOutProof
 
+		// tx
 		var transactionRaw bytes.Buffer
 		err = tx.MsgTx().BchEncode(&transactionRaw, 0, wire.BaseEncoding)
 		if err != nil {
-			re.Error = "Error encoding transaction"
-			_, _ = fmt.Fprint(w, re.Format())
+			fmt.Println("Error encoding transaction", err.Error())
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("Error 500"))
 			return
 		}
-
-		tapp := txAndProofPair{}
+		// add to output (hex-encoded string)
 		tapp.Tx = hex.EncodeToString(transactionRaw.Bytes())
-		tapp.Proof = txOutProof
 
 		re.Results = append(re.Results, tapp)
-
 	}
 	_ = rr.Close()
-
+	w.Header().Add("Content-Type", "application/json")
 	_, _ = fmt.Fprint(w, re.Format())
 }
 
-const defaultConfig string = "[cashAccountAPId]\nrpchost=127.0.0.1:8334\nrpcendpoint=ws\nrpcuser=\nrpcpass=\nwebserverbindaddr=127.0.0.1:8080"
+const defaultConfig string = "[cashAccountAPId]\nrpchost=0.0.0.0:8585\nrpcendpoint=ws\nrpcuser=\nrpcpass=\nwebserverbindaddr=127.0.0.1:8080"
 
 type Config struct {
 	cashAccountDBd struct {
@@ -176,8 +192,7 @@ type Config struct {
 	}
 }
 
-type response struct {
-	Error   string           `json:"error"`
+type responseLookup struct {
 	Name    string           `json:"name"`
 	Block   int64            `json:"block"`
 	Results []txAndProofPair `json:"results"`
@@ -188,7 +203,7 @@ type txAndProofPair struct {
 	Proof string `json:"inclusion_proof"`
 }
 
-func (r response) Format() string {
+func (r responseLookup) Format() string {
 	tmp, _ := json.MarshalIndent(r, " ", "    ")
 	return string(tmp)
 }
