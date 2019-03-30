@@ -100,11 +100,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	// parse data from the URL, parseInt can not fail, because the int was already verfied in the regex test above
 	re.Block, _ = strconv.ParseInt(m[1], 10, 64)
 	re.Block += 563620
-	re.Name = m[2]
+	re.Identifier = m[2] + "#" + m[1]
+	name := m[2]
 	re.Results = []txAndProofPair{}
 
 	// lookup if there is any entry in the database
-	rr, err := sqliteDB.Query(`SELECT txid FROM nameindex WHERE name like ? AND block == ?;`, re.Name, re.Block)
+	rr, err := sqliteDB.Query(`SELECT txid FROM nameindex WHERE name like ? AND block == ?;`, name, re.Block)
 	if err != nil {
 		w.WriteHeader(500)
 		_, _ = w.Write([]byte("Error 500"))
@@ -193,9 +194,9 @@ type Config struct {
 }
 
 type responseLookup struct {
-	Name    string           `json:"name"`
-	Block   int64            `json:"block"`
-	Results []txAndProofPair `json:"results"`
+	Identifier string           `json:"identifier"`
+	Block      int64            `json:"block"`
+	Results    []txAndProofPair `json:"results"`
 }
 
 type txAndProofPair struct {
@@ -204,6 +205,6 @@ type txAndProofPair struct {
 }
 
 func (r responseLookup) Format() string {
-	tmp, _ := json.MarshalIndent(r, " ", "    ")
+	tmp, _ := json.MarshalIndent(r, "", "  ")
 	return string(tmp)
 }
