@@ -50,6 +50,12 @@ To update to a newer version of cashAccountAPId run:
 go get -u github.com/abck/cashAccountAPId
 ```
 
+### 2. Updating
+To update to a newer version of cashAccountAPId run:
+```
+go get -u github.com/abck/cashAccountAPId
+```
+
 ### 3. Web-Endpoints
 #### `/lookup/accountNumber/accountName/`
 Example: `/lookup/100/jonathan/` will return:
